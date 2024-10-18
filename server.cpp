@@ -1,127 +1,171 @@
 #define STRICT
-
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 
+#include <WinSock2.h>
+#include <Windows.h>
+#include <tchar.h>
+#include <thread>
 #include <iostream>
-#include <winsock2.h>
 
 #pragma comment(lib, "ws2_32.lib")
 
-int main() 
+#include "resource.h"
+
+#define PORT 8000
+#define SERVER_IP "127.0.0.1"
+#define BUFFER_SIZE 1024
+
+HINSTANCE g_hInstance;
+HBITMAP hBitmap;
+POINT imagePos = { 50,50 };
+SOCKET g_socket;
+bool isServer;
+
+LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+
+void LoadBitmapResource(int resourceID)
 {
-    WSADATA wsa;
-    SOCKET server_socket, client_socket;
-    sockaddr_in server_addr, client_addr;
-    
-    int client_addr_size = sizeof(client_addr);
-    char buffer[1024];
-    int port;
+	hBitmap = LoadBitmap(g_hInstance, MAKEINTRESOURCE(resourceID));
 
-    // WinSockの初期化
-    std::cout << "WinSockを初期化..." << std::endl;
+	if (!hBitmap)
+	{
+		MessageBox(NULL, _T("ビットマップのロードに失敗"), _T("エラー"), MB_ICONERROR);
+	}
+}
 
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
-    {
-        std::cerr << "失敗 エラーコード : " << WSAGetLastError() << std::endl;
-        return 1;
-    }
+void NetworkThread()
+{
+	char buffer[BUFFER_SIZE];
 
-    std::cout << "WinSockが初期化されました..." << std::endl;
+	while (true)
+	{
+		if (isServer)
+		{
+			printf_s(buffer, "%d %d", imagePos.x, imagePos.y);
+			send(g_socket, buffer, sizeof(buffer), 0);
+		}
+		else
+		{
+			recv(g_socket, buffer, sizeof(buffer), 0);
+			scanf_s(buffer, "%d %d", &imagePos.x, &imagePos.y);
+		}
 
-    // サーバーソケットの作成
-    if ((server_socket = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET)
-    {
-        std::cerr << "ソケットの作成に失敗...: " << WSAGetLastError() << std::endl;
+		Sleep(30);
+	}
+}
 
-        return 1;
-    }
+int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nCmdShow)
+{
+	g_hInstance = hInstance;
 
-    std::cout << "ソケットを作成" << std::endl;
+	WSADATA wsaData;
 
-    // ポートの入力
-    std::cout << "サーバのポート番号を入力してください: ";
-    std::cin >> port;
-    std::cin.ignore();
+	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+	{
+		MessageBox(NULL, _T("WSAStartupに失敗"), _T("エラー"), MB_ICONERROR);
 
-    // サーバーのIPアドレスとポート番号を設定
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(port);
+		return 1;
+	}
 
-    // ソケットをバインド
-    if (bind(server_socket, (sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR)
-    {
-        std::cerr << "バインドに失敗 エラーコード: " << WSAGetLastError() << std::endl;
-        closesocket(server_socket);
-        WSACleanup();
+	g_socket = socket(AF_INET, SOCK_STREAM, 0);
 
-        return 1;
-    }
+	if (g_socket == INVALID_SOCKET)
+	{
+		MessageBox(NULL, _T("ソケットの作成に失敗"), _T("エラー"), MB_ICONERROR);
+		WSACleanup();
 
-    std::cout << "バインドを完了" << std::endl;
+		return 1;
+	}
 
-    // 接続を待つ
-    listen(server_socket, 3);
-    std::cout << "メッセージの送信を待機中" << std::endl;
+	int choice = MessageBox(NULL, _T("サーバーとして開始しますか？"), _T("ネットワークセットアップ"), MB_YESNO);
+	isServer = (choice == IDYES);
 
-    // クライアントの接続を受け入れる
-    client_socket = accept(server_socket, (sockaddr*)&client_addr, &client_addr_size);
+	sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(PORT);
+	addr.sin_addr.s_addr = isServer ? INADDR_ANY : inet_addr(SERVER_IP);
 
-    if (client_socket == INVALID_SOCKET)
-    {
-        std::cerr << "受信に失敗 エラーコード: " << WSAGetLastError() << std::endl;
-        closesocket(server_socket);
-        WSACleanup();
+	if (isServer)
+	{
+		bind(g_socket, (sockaddr*)&addr, sizeof(addr));
+		listen(g_socket, 1);
 
-        return 1;
-    }
+		sockaddr_in clientAddr;
 
-    std::cout << "接続完了 (接続を終了する場合は'quit'を入力してください)" << std::endl;
+		int clientAddrSize = sizeof(clientAddr);
+		g_socket = accept(g_socket, (sockaddr*)&clientAddr, &clientAddrSize);
+	}
+	else
+	{
+		connect(g_socket, (sockaddr*)&addr, sizeof(addr));
+	}
 
-    // メッセージ処理ループ
-    int recv_size;
-    while (true)
-    {
-        recv_size = recv(client_socket, buffer, 1024, 0);
+	WNDCLASS wc = {};
+	wc.lpfnWndProc = WndProc;
+	wc.hInstance = hInstance;
+	wc.lpszClassName = _T("NetwordWindow");
+	wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+	wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+	RegisterClass(&wc);
 
-        if (recv_size == SOCKET_ERROR)
-        {
-            std::cerr << "受信に失敗 エラーコード: " << WSAGetLastError() << std::endl;
-            break;
-        }
-        else if (recv_size == 0)
-        {
-            std::cout << "クライアントが切断しました" << std::endl;
-            break;
-        }
+	HWND hwnd = CreateWindow(wc.lpszClassName, _T("Network Bitmap"), WS_OVERLAPPEDWINDOW,
+		CW_USEDEFAULT, CW_USEDEFAULT, 800, 600, NULL, NULL, hInstance, NULL);
 
-        buffer[recv_size] = '\0';
+	ShowWindow(hwnd, nCmdShow);
+	UpdateWindow(hwnd);
 
-        std::cout << "クライアントのメッセージ: " << buffer << std::endl;
+	LoadBitmapResource(isServer ? IDB_BITMAP1 : IDB_BITMAP2);
 
-        std::cout << "送信するメッセージを入力してください: ";
-        std::cin.getline(buffer, 1024);
+	std::thread networkThread(NetworkThread);
+	networkThread.detach();
 
-        if (strcmp(buffer, "quit") == 0)
-        {
-            std::cout << "接続を終了" << std::endl;
-            break;
-        }
+	MSG msg;
 
-        if (send(client_socket, buffer, strlen(buffer), 0) < 0)
-        {
-            std::cerr << "メッセージの送信に失敗 エラーコード: " << WSAGetLastError() << std::endl;
-            break;
-        }
-    }
+	while (GetMessage(&msg, NULL, 0, 0))
+	{
+		TranslateMessage(&msg);
+		DispatchMessage(&msg);
+	}
 
-    // ソケットを閉じる
-    closesocket(client_socket);
+	closesocket(g_socket);
+	WSACleanup();
 
-    closesocket(server_socket);
+	return (int)msg.wParam;
+}
 
-    WSACleanup();
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+	switch (msg)
+	{
+	case WM_PAINT:
+	{
+		PAINTSTRUCT ps;
+		HDC hdc = BeginPaint(hwnd, &ps);
+		HDC hdcMem = CreateCompatibleDC(hdc);
+		SelectObject(hdcMem, hBitmap);
+		BitBlt(hdc, imagePos.x, imagePos.y, 100, 100, hdcMem, 0, 0, SRCCOPY);
+		DeleteDC(hdcMem);
+		EndPaint(hwnd, &ps);
+		break;
+	}
+	case WM_KEYDOWN:
+	{
+		switch (wparam)
+		{
+		case VK_LEFT: imagePos.x -= 5; break;
+		case VK_RIGHT: imagePos.x += 5; break;
+		case VK_UP: imagePos.y -= 5; break;
+		case VK_DOWN: imagePos.y += 5; break;
+		}
 
-    return 0;
+		InvalidateRect(hwnd, NULL, TRUE);
+		break;
+	}
+	case WM_DESTROY:
+		PostQuitMessage(0);
+		break;
+	}
+
+	return DefWindowProc(hwnd, msg, wparam, lparam);
 }
