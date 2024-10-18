@@ -1,171 +1,226 @@
-#define STRICT
-#define _WINSOCK_DEPRECATED_NO_WARNINGS
-#define WIN32_LEAN_AND_MEAN
-
-#include <WinSock2.h>
-#include <Windows.h>
-#include <tchar.h>
-#include <thread>
-#include <iostream>
+#include <windows.h>
+#include <process.h>
+#include <mmsystem.h>
+#include <winsock2.h>
 
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "winmm.lib")
 
-#include "resource.h"
+HWND hwMain;
 
-#define PORT 8000
-#define SERVER_IP "127.0.0.1"
-#define BUFFER_SIZE 1024
+// 送受信する座標データ
+struct POS
+{
+    int x;
+    int y;
+};
+POS pos1P, pos2P, old_pos2P;
+RECT rect;
 
-HINSTANCE g_hInstance;
-HBITMAP hBitmap;
-POINT imagePos = { 50,50 };
-SOCKET g_socket;
-bool isServer;
-
+// プロトタイプ宣言
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+DWORD WINAPI Threadfunc(void*);
 
-void LoadBitmapResource(int resourceID)
+int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR szCmdLine, _In_ int iCmdShow)
 {
-	hBitmap = LoadBitmap(g_hInstance, MAKEINTRESOURCE(resourceID));
+    MSG msg;
+    WNDCLASS wndclass;
+    WSADATA wdData;
 
-	if (!hBitmap)
-	{
-		MessageBox(NULL, _T("ビットマップのロードに失敗"), _T("エラー"), MB_ICONERROR);
-	}
+    wndclass.style = CS_HREDRAW | CS_VREDRAW;
+    wndclass.lpfnWndProc = WndProc;
+    wndclass.cbClsExtra = 0;
+    wndclass.cbWndExtra = 0;
+    wndclass.hInstance = hInstance;
+    wndclass.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    wndclass.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wndclass.hbrBackground = (HBRUSH)GetStockObject(WHITE_BRUSH);
+    wndclass.lpszMenuName = NULL;
+    wndclass.lpszClassName = "CWindow";
+
+    RegisterClass(&wndclass);
+
+    // Winsock初期化
+    WSAStartup(MAKEWORD(2, 0), &wdData);
+
+    hwMain = CreateWindow("CWindow", "Server",
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+        800, 600, NULL, NULL, hInstance, NULL);
+
+    // ウインドウ表示
+    ShowWindow(hwMain, iCmdShow);
+
+    // ウィンドウ領域更新(WM_PAINTメッセージを発行)
+    UpdateWindow(hwMain);
+
+    // メッセージループ
+    while (GetMessage(&msg, NULL, 0, 0))
+    {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    // Winsock終了
+    WSACleanup();
+
+    return 0;
 }
 
-void NetworkThread()
+// ウインドウプロシージャ
+LRESULT CALLBACK WndProc(HWND hwnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
 {
-	char buffer[BUFFER_SIZE];
+    static HDC hdc, mdc, mdc2P;
+    static PAINTSTRUCT ps;
+    static HBITMAP hBitmap, hBitmap2P;
+    static char str[256];
 
-	while (true)
-	{
-		if (isServer)
-		{
-			printf_s(buffer, "%d %d", imagePos.x, imagePos.y);
-			send(g_socket, buffer, sizeof(buffer), 0);
-		}
-		else
-		{
-			recv(g_socket, buffer, sizeof(buffer), 0);
-			scanf_s(buffer, "%d %d", &imagePos.x, &imagePos.y);
-		}
+    static HANDLE hThread;
+    static DWORD dwID;
 
-		Sleep(30);
-	}
+    // WINDOWSから飛んで来るメッセージに対応する処理の記述
+    switch (iMsg)
+    {
+    case WM_CREATE:
+        // リソースからビットマップを読み込む（1P）
+        hBitmap = LoadBitmap(((LPCREATESTRUCT)lParam)->hInstance, MAKEINTRESOURCE(IDB_BITMAP1));
+
+        // ディスプレイと互換性のある論理デバイス（デバイスコンテキスト）を取得（1P）
+        mdc = CreateCompatibleDC(NULL);
+
+        // 論理デバイスに読み込んだビットマップを展開（1P）
+        SelectObject(mdc, hBitmap);
+
+        // リソースからビットマップを読み込む（2P）
+        hBitmap2P = LoadBitmap(((LPCREATESTRUCT)lParam)->hInstance, MAKEINTRESOURCE(IDB_BITMAP2));
+
+        // （2P）
+        mdc2P = CreateCompatibleDC(NULL);
+
+        // （2P）
+        SelectObject(mdc2P, hBitmap2P);
+
+        // 位置情報を初期化
+        pos1P.x = pos1P.y = 0;
+        pos2P.x = pos2P.y = 100;
+
+        // データを送受信処理をスレッド（WinMainの流れに関係なく動作する処理の流れ）として生成。
+        hThread = CreateThread(NULL, 0, Threadfunc, (LPVOID)&pos1P, 0, &dwID);
+        break;
+    case WM_KEYDOWN:
+        switch (wParam)
+        {
+        case VK_ESCAPE:
+            SendMessage(hwnd, WM_CLOSE, NULL, NULL);
+            break;
+        case VK_RIGHT:
+            pos1P.x += 5;
+            break;
+        case VK_LEFT:
+            pos1P.x -= 5;
+            break;
+        case VK_DOWN:
+            pos1P.y += 5;
+            break;
+        case VK_UP:
+            pos1P.y -= 5;
+            break;
+        }
+
+        InvalidateRect(hwnd, NULL, TRUE);
+        UpdateWindow(hwnd);
+        break;
+    case WM_PAINT:
+        hdc = BeginPaint(hwnd, &ps);
+
+        // サーバ側キャラ描画
+        BitBlt(hdc, pos1P.x, pos1P.y, 32, 32, mdc, 0, 0, SRCCOPY);
+        // クライアント側キャラ描画
+        BitBlt(hdc, pos2P.x, pos2P.y, 32, 32, mdc2P, 0, 0, SRCCOPY);
+
+        wsprintf(str, "サーバ側：X:%d Y:%d　　クライアント側：X:%d Y:%d", pos1P.x, pos1P.y, pos2P.x, pos2P.y);
+        SetWindowText(hwMain, str);
+
+        EndPaint(hwnd, &ps);
+        return 0;
+
+    case WM_DESTROY:
+        DeleteObject(hBitmap);
+        DeleteDC(mdc);
+        DeleteObject(hBitmap2P);
+        DeleteDC(mdc2P);
+
+        PostQuitMessage(0);
+        return 0;
+    }
+
+    return DefWindowProc(hwnd, iMsg, wParam, lParam);
 }
 
-int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPTSTR lpCmdLine, int nCmdShow)
+// 通信スレッド関数
+DWORD WINAPI Threadfunc(void* px)
 {
-	g_hInstance = hInstance;
+    SOCKET sWait, sConnect;
+    WORD wPort = 8000;
+    SOCKADDR_IN saConnect, saLocal;
+    int iLen, iRecv;
 
-	WSADATA wsaData;
+    sWait = socket(AF_INET, SOCK_STREAM, 0);
+    ZeroMemory(&saLocal, sizeof(saLocal));
 
-	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
-	{
-		MessageBox(NULL, _T("WSAStartupに失敗"), _T("エラー"), MB_ICONERROR);
+    saLocal.sin_family = AF_INET;
+    saLocal.sin_addr.s_addr = INADDR_ANY;
+    saLocal.sin_port = htons(wPort);
 
-		return 1;
-	}
+    if (bind(sWait, (LPSOCKADDR)&saLocal, sizeof(saLocal)) == SOCKET_ERROR)
+    {
+        closesocket(sWait);
+        SetWindowText(hwMain, "接続待機ソケット失敗");
+        return 1;
+    }
 
-	g_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (listen(sWait, 2) == SOCKET_ERROR)
+    {
+        closesocket(sWait);
+        SetWindowText(hwMain, "接続待機ソケット失敗");
+        return 1;
+    }
 
-	if (g_socket == INVALID_SOCKET)
-	{
-		MessageBox(NULL, _T("ソケットの作成に失敗"), _T("エラー"), MB_ICONERROR);
-		WSACleanup();
+    SetWindowText(hwMain, "接続待機ソケット成功");
 
-		return 1;
-	}
+    iLen = sizeof(saConnect);
 
-	int choice = MessageBox(NULL, _T("サーバーとして開始しますか？"), _T("ネットワークセットアップ"), MB_YESNO);
-	isServer = (choice == IDYES);
+    sConnect = accept(sWait, (LPSOCKADDR)&saConnect, &iLen);
+    closesocket(sWait);
 
-	sockaddr_in addr;
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(PORT);
-	addr.sin_addr.s_addr = isServer ? INADDR_ANY : inet_addr(SERVER_IP);
+    if (sConnect == INVALID_SOCKET)
+    {
+        SetWindowText(hwMain, "ソケット接続失敗");
+        return 1;
+    }
 
-	if (isServer)
-	{
-		bind(g_socket, (sockaddr*)&addr, sizeof(addr));
-		listen(g_socket, 1);
+    SetWindowText(hwMain, "ソケット接続成功");
 
-		sockaddr_in clientAddr;
+    while (1)
+    {
+        old_pos2P = pos2P;
+        int nRcv = recv(sConnect, (char*)&pos2P, sizeof(POS), 0);
 
-		int clientAddrSize = sizeof(clientAddr);
-		g_socket = accept(g_socket, (sockaddr*)&clientAddr, &clientAddrSize);
-	}
-	else
-	{
-		connect(g_socket, (sockaddr*)&addr, sizeof(addr));
-	}
+        if (nRcv == SOCKET_ERROR) break;
 
-	WNDCLASS wc = {};
-	wc.lpfnWndProc = WndProc;
-	wc.hInstance = hInstance;
-	wc.lpszClassName = _T("NetwordWindow");
-	wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-	wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-	RegisterClass(&wc);
+        send(sConnect, (const char*)&pos1P, sizeof(POS), 0);
 
-	HWND hwnd = CreateWindow(wc.lpszClassName, _T("Network Bitmap"), WS_OVERLAPPEDWINDOW,
-		CW_USEDEFAULT, CW_USEDEFAULT, 800, 600, NULL, NULL, hInstance, NULL);
+        if (old_pos2P.x != pos2P.x || old_pos2P.y != pos2P.y)
+        {
+            rect.left = old_pos2P.x - 10;
+            rect.top = old_pos2P.y - 10;
+            rect.right = old_pos2P.x + 42;
+            rect.bottom = old_pos2P.y + 42;
+            InvalidateRect(hwMain, &rect, TRUE);
+        }
+    }
 
-	ShowWindow(hwnd, nCmdShow);
-	UpdateWindow(hwnd);
+    shutdown(sConnect, 2);
+    closesocket(sConnect);
 
-	LoadBitmapResource(isServer ? IDB_BITMAP1 : IDB_BITMAP2);
-
-	std::thread networkThread(NetworkThread);
-	networkThread.detach();
-
-	MSG msg;
-
-	while (GetMessage(&msg, NULL, 0, 0))
-	{
-		TranslateMessage(&msg);
-		DispatchMessage(&msg);
-	}
-
-	closesocket(g_socket);
-	WSACleanup();
-
-	return (int)msg.wParam;
-}
-
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
-{
-	switch (msg)
-	{
-	case WM_PAINT:
-	{
-		PAINTSTRUCT ps;
-		HDC hdc = BeginPaint(hwnd, &ps);
-		HDC hdcMem = CreateCompatibleDC(hdc);
-		SelectObject(hdcMem, hBitmap);
-		BitBlt(hdc, imagePos.x, imagePos.y, 100, 100, hdcMem, 0, 0, SRCCOPY);
-		DeleteDC(hdcMem);
-		EndPaint(hwnd, &ps);
-		break;
-	}
-	case WM_KEYDOWN:
-	{
-		switch (wparam)
-		{
-		case VK_LEFT: imagePos.x -= 5; break;
-		case VK_RIGHT: imagePos.x += 5; break;
-		case VK_UP: imagePos.y -= 5; break;
-		case VK_DOWN: imagePos.y += 5; break;
-		}
-
-		InvalidateRect(hwnd, NULL, TRUE);
-		break;
-	}
-	case WM_DESTROY:
-		PostQuitMessage(0);
-		break;
-	}
-
-	return DefWindowProc(hwnd, msg, wparam, lparam);
+    return 0;
 }
